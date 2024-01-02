@@ -1,0 +1,15 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+numpy = "==1.26.2"
+shapely = "==2.0.1"
+scipy = "==1.11.4"
+pyeditdistance = "==1.0.1"
+
+[dev-packages]
+
+[requires]
+python_version = "3.9"

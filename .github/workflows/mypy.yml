@@ -1,0 +1,25 @@
+name: Mypy
+
+on:
+  push:
+    paths:
+      - '*.py'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: Mypy
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: Set up Python 3.9.18
+      uses: actions/setup-python@v5
+      with:
+        python-version: 3.9.18
+        cache: 'pip'
+    - name: Install Dependencies
+      run: |
+        pip install mypy -r requirements.txt -r optional-requirements.txt
+    - name: Run mypy
+      run: |
+        mypy eval.py
