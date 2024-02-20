@@ -104,28 +104,16 @@ python3 eval.py --gt sample.json --pred YOUROUTPUT.json --task det --parallel po
 
 See competition [downloads](https://rrc.cvc.uab.es/?ch=28&com=downloads) for data details and [tasks](https://rrc.cvc.uab.es/?ch=28&com=tasks) for file format details.
 
-### General Rumsey Data Set [![DOI:10.5281/zenodo.10608901](https://zenodo.org/badge/DOI/10.5281/zenodo.10608901.svg)](https://doi.org/10.5281/zenodo.10608901)
+* [General Rumsey Data Set ![DOI:10.5281/zenodo.10608900](https://zenodo.org/badge/DOI/10.5281/zenodo.10608900.svg)](https://doi.org/10.5281/zenodo.10608900)
   - Train Split (200 tiles from 196 maps)
-    * [Ground Truth JSON](https://zenodo.org/records/10608901/files/rumsey_train.json?download=1)
-    * [Images ZIP](https://zenodo.org/records/10608901/files/train.zip?download=1)
   - Validation Split (40 tiles from 40 maps)
-    * [Ground Truth JSON](https://zenodo.org/records/10608901/files/rumsey_val.json?download=1)
-    * [Images ZIP](https://zenodo.org/records/10608901/files/val.zip?download=1)
-### French Cadastre Data Set [![DOI:10.5281/zenodo.10610732](https://zenodo.org/badge/DOI/10.5281/zenodo.10610732.svg)](https://doi.org/10.5281/zenodo.10610732)
+* [French Cadastre Data Set ![DOI:10.5281/zenodo.10610731](https://zenodo.org/badge/DOI/10.5281/zenodo.10610731.svg)](https://doi.org/10.5281/zenodo.10610731)
   - Train Split (80 tiles from 37 maps)
-    * [Ground Truth JSON](https://zenodo.org/records/10610732/files/ign_train.json?download=1)
-    * [Images ZIP](https://zenodo.org/records/10610732/files/train.zip?download=1)
   - Validation Split (15 tiles from 9 maps)
-    * [Ground Truth JSON](https://zenodo.org/records/10610732/files/ign_val.json?download=1)
-    * [Images ZIP](https://zenodo.org/records/10610732/files/val.zip?download=1)
-### Competition Test Data (Expected 1 Mar 2024)
+* Competition Test Data (Expected 1 Mar 2024)
   - General Rumsey Data Set (700 tiles from 700 maps)
-    * Images
   - French Cadastre Data Set (50 tiles from 50 maps)
-    * Images
-### Sample data set [![DOI:10.5281/zenodo.10444912](https://zenodo.org/badge/DOI/10.5281/zenodo.10444912.svg)](https://doi.org/10.5281/zenodo.10444912)
-(353 tiles from 31 maps of 9 atlases)
-  - [Ground Truth JSON](https://zenodo.org/records/10444913/files/sample.json?download=1)
-  - [Images ZIP](https://zenodo.org/records/10444913/files/sample.zip?download=1)
-
+* [Sample Data Set ![DOI:10.5281/zenodo.10444912](https://zenodo.org/badge/DOI/10.5281/zenodo.10444912.svg)](https://doi.org/10.5281/zenodo.10444912)
+  - 353 tiles from 31 maps of 9 atlases
+  
 
