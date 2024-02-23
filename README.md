@@ -72,12 +72,13 @@ To parallelize calculation, use `--parallel pool` for the built-in Python method
 
 For other options (including writing per-image results to persistent file output) use `--help`.
 
-| Output Key      | Metric                                 |
-| :-------------  | :------------------------------------- |
-| `det_quality`   | Panoptic Detection Quality (PDQ)       |
-| `rec_quality`   | Panoptic Recognition Quality (PRQ)     |
-| `char_quality`  | Panoptic Character Quality (PCQ)       |
-| `char_accuracy` | 1 – Avg NED (Normalized Edit Distance) |
+| Output Key      | Metric                                                       |
+| :-------------  | :----------------------------------------------------------- |
+| `quality`       | Panoptic Detection or Recognition Quality (PDQ or PRQ)       |
+| `char_quality`  | Panoptic Character Quality (PCQ)                             |
+| `char_accuracy` | 1 – Avg NED (Normalized Edit Distance) among true positives  |
+
+Note that `char_quality` and `char_accuracy` are only meaningful for the `detreclink` task.
 
 See [Competition Tasks](https://rrc.cvc.uab.es/?ch=28&com=tasks) for additional details and metric definitions.
 
@@ -90,7 +91,7 @@ python3 eval.py --gt data/example_gt.json --pred data/example_pred.json --task d
 ```
 Output:
 ```json
-{"det_recall": 0.875, "det_precision": 1.0, "det_fscore": 0.9333333333333333, "det_tightness": 0.7915550522475774, "det_quality": 0.7387847154310723, "rec_recall": 0.375, "rec_precision": 0.42857142857142855, "rec_fscore": 0.39999999999999997, "rec_tightness": 0.7638758923791641, "rec_quality": 0.3055503569516656, "char_accuracy": 0.8067226890756303, "char_quality": 0.5959943922805289}
+{"recall": 0.375, "precision": 0.42857142857142855, "fscore": 0.39999999999999997, "tightness": 0.7638758904606489, "quality": 0.3055503561842595, "char_accuracy": 1.0, "char_quality": 0.3055503561842595}
 ```
 
 #### Sample Data
