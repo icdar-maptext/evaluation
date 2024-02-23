@@ -21,7 +21,7 @@ import re
 
 from functools import reduce, partial
 from multiprocessing import Pool
-from typing import Union, Tuple, Any, Optional
+from typing import Union, Tuple, Any, Optional, Callable
 
 import scipy  # type: ignore
 import numpy as np
@@ -30,6 +30,12 @@ import shapely  # type: ignore
 
 from pyeditdistance.distance import normalized_levenshtein  # type: ignore
 
+# Minimum area of a polygon to be considered for area-based processing
+# Values below this will be treated as an IoU or overlap percentage of zero.
+POLY_EPSILON = 1e-5
+
+# Score value for matches with ignore ground truths
+IGNORE_EPSILON = 1e-12
 
 parser = argparse.ArgumentParser(
     description='Map Text Competition Task Evaluation')
@@ -60,7 +66,7 @@ Number = Union[int,float]
 
 def warn_image_keys( gt_keys: set,
                      preds_keys: set ):
-    """Log warnings about image key discrepancies between ground truth and 
+    """Log warnings about image key discrepancies between ground truth and
     prediction files (i.e., predictions missing an image from ground truth)."""
 
     for gt in gt_keys:
@@ -279,10 +285,10 @@ def load_ground_truth( gt_file: str,
     with open(gt_file, encoding='utf-8') as fd:
         gt_raw = json.load(fd)
 
-    if verify: 
+    if verify:
         verify_ground_truth_format(gt_raw)
 
-    # Re-index: image --> groups, wrapping group lists to dicts (for more fields)
+    # Re-index: image-->groups, wrapping group lists to dicts (for more fields)
     gt = {}
     regex = re.compile(image_regex) if image_regex else None
     for entry in gt_raw:
@@ -306,7 +312,8 @@ def load_ground_truth( gt_file: str,
 def load_predictions( preds_file: str,
                       is_linking: bool,
                       is_e2e: bool,
-                      image_regex: Optional[str] = None ) -> dict[str,ImageData]:
+                      image_regex: Optional[str] = None ) \
+                      -> dict[str,ImageData]:
     """ Load the predictions file and verify contents format
 
     Arguments
@@ -324,7 +331,7 @@ def load_predictions( preds_file: str,
 
     verify_predictions_format(preds_raw, is_e2e)
 
-    # Re-index: image --> groups, wrapping group lists to dicts (for more fields)
+    # Re-index: image-->groups, wrapping group lists to dicts (for more fields)
     preds = {}
     regex = re.compile(image_regex) if image_regex else None
     for entry in preds_raw:
@@ -341,32 +348,48 @@ def load_predictions( preds_file: str,
     return preds
 
 
-def calc_iou_pairs( gt: Union[list[WordData],list[GroupData]],
-                    pred: Union[list[WordData],list[GroupData]],
-                    match_thresh: float ) -> npt.ArrayLike:
-    """Return the IoU between all pairs of shapes.
+def calc_score_pairs( gt: Union[list[WordData],list[GroupData]],
+                      pred: Union[list[WordData],list[GroupData]],
+                      can_match: Callable[[Union[WordData,GroupData],
+                                           Union[WordData,GroupData],float],
+                                          bool],
+                      score_match: Callable[[Union[WordData,GroupData],
+                                             Union[WordData,GroupData],float],
+                                            bool] ) \
+                      -> Tuple[npt.NDArray[np.bool_],
+                               npt.NDArray[np.double],
+                               npt.NDArray[np.double]]:
+    """Return the correspondence score and IoU between all pairs of shapes.
 
     Arguments
       gt :  List of dicts containing ground truth elements (each has the field
            'geometry' among others).
       pred : List of dicts containing predicted elements (each has the field
              'geometry' among others).
-      match_thresh : Threshold the calculated IoU must exceed or else be
-                     trimmed down to 0.
+      can_match: Predicate indicating whether ground truth and prediction are
+                   valid correspondence candidates
+      score_match: Function taking ground truth and predicted word dicts with
+                    their pre-calculated iou score and returning their match
+                    score (assumes they are valid matches)
     Returns
-      ious : MxN numpy float array, where M is len(gt) and N is len(pred).
-    """
+      allowed: MxN numpy bool array of can_match(g,d) correspondence candidates
+      scores : MxN numpy float array of compatibility scores
+      ious : MxN numpy float array of IoU values
 
+      where M is len(gt) and N is len(pred).
+    """
     def calc_iou( p, q ) -> float :
         """ Return the IoU between two shapes """
-        if p.intersects(q):
+        if p.intersects(q) and \
+          p.area >= POLY_EPSILON and q.area >= POLY_EPSILON:
             intersection = p.intersection(q).area
             union = p.union(q).area
-            return intersection / union
+            return intersection / (union + POLY_EPSILON)
         else:
             return 0.0
 
-
+    allowed = np.zeros( (len(gt),len(pred)), dtype=np.bool_ )
+    scores = -np.ones( (len(gt),len(pred)), dtype=np.double )
     ious = np.zeros( (len(gt),len(pred)), dtype=np.double )
 
     for i,gt_el in enumerate(gt):
@@ -376,59 +399,16 @@ def calc_iou_pairs( gt: Union[list[WordData],list[GroupData]],
             except shapely.errors.GEOSException as e:
                 logging.warning('Error at iou(%d,%d): %s}. Skipping ...',i,j,e)
                 continue
-            if the_iou != 0 and the_iou > match_thresh:
+
+            if the_iou != 0:
                 ious[i,j] = the_iou
-    return ious
 
+            allowed[i,j] = can_match( gt_el, pred_el, the_iou)
 
-def calc_transcriptions_correct ( gt: Union[list[WordData],list[GroupData]],
-                                  pred: Union[list[WordData],list[GroupData]] ) \
-                                  -> npt.ArrayLike: # list[bool]:
-    """Calculate where paired ground truth and prediction texts meet
-     the criteria for correctness.
+            if allowed[i,j]:
+                scores[i,j] = score_match( gt_el, pred_el, the_iou)
 
-    Arguments
-      gt : Ground truth elements, with field 'text'
-      pred : Corresponding predicted elements, with field 'text'
-    Preconditions
-      len(gt)==len(pred), so that elements are in correspondence
-    Returns
-       boolean NumPy array indicating corresponding pairs in list with
-         "matching" text fields
-    """
-
-    # simple local function for now, imagining a future where it is a parameter
-    def is_match(g: dict[str,Any] ,p: dict[str,Any]) -> bool:
-        return g['text'] == p['text']
-
-    # TODO(jjw) generalize matching criteria?
-    results = [ is_match(g,p) for (g,p) in zip(gt,pred)]
-    return np.asarray(results, dtype=np.bool_)  # np'd for indexing
-
-
-def calc_transcriptions_scores ( gt: Union[list[WordData],list[GroupData]],
-                                 pred: Union[list[WordData],list[GroupData]] ) \
-                                 -> npt.ArrayLike:  # list[float]:
-    """Calculate transcription scores between paired ground truth and prediction
-    texts (i.e., 1 - normalized edit distance).
-
-    Arguments
-      gt : Ground truth elements, with field 'text'
-      pred : Corresponding predicted elements, with field 'text'
-    Preconditions
-      len(gt)==len(pred), so that elements are in correspondence
-    Returns
-       float NumPy array scoring the corresponding pairs' 'text' fields
-         "matching" text fields
-    """
-
-    # local function for now, imagine a future where it is a parameter
-    def score_pred(g: str ,p: str) -> float:
-        return 1 - normalized_levenshtein(g,p)
-
-    # TODO(jjw) generalize score function?
-    results = [ score_pred(g['text'],p['text']) for (g,p) in zip(gt,pred)]
-    return np.asarray(results)
+    return allowed,scores,ious
 
 
 def get_stats( num_tp: Number, num_gt: Number, num_pred: Number, tot_iou: Number,
@@ -467,91 +447,98 @@ def get_final_stats(totals: dict[str,Number],
     """Process totals to produce final statistics for the entire data set.
 
     Arguments
-      totals : Dict with keys 'tp_det', 'total_gt', 'total_pred',
-                 'total_det_tightness', and (if 'rec' in task), 'tp_rec',
-                 'total_rec_tightness', and 'total_rec_score'.
+      totals : Dict with keys 'tp', 'total_gt', 'total_pred',
+                 'total_tightness', and (if 'rec' in task), 'total_rec_score'.
       task : String containing a valid task (cf parser)
     Returns
-      dict containing statistics with keys 'det_recall', 'det_precision',
-        'det_fscore', 'det_tightness' (average IoU score),  'det_quality'
-        (product of fscore and tightness), and (if 'rec' in task) 'rec_recall',
-        'rec_precision', 'rec_fscore', 'rec_tightness',  'rec_quality',
+      dict containing statistics with keys 'recall', 'precision',
+        'fscore', 'tightness' (average IoU score),  'quality'
+        (product of fscore and tightness), and (if 'rec' in task)
        'char_accuracy' and 'char_quality' (product of det_quality and
        char_accuracy).
     """
-    final_stats = get_stats( totals['tp_det'],
+    final_stats = get_stats( totals['tp'],
                              totals['total_gt'],
                              totals['total_pred'],
-                             totals['total_det_tightness'], 'det_')
+                             totals['total_tightness'])
     if 'rec' in task:
-        final_stats.update( get_stats( totals['tp_rec'],
-                                       totals['total_gt'],
-                                       totals['total_pred'],
-                                       totals['total_rec_tightness'], 'rec_') )
-        if totals['tp_det'] > 0:
-            accuracy = totals['total_rec_score'] / float(totals['tp_det'])
+        if totals['tp'] > 0:
+            accuracy = totals['total_rec_score'] / float(totals['tp'])
         else:
             accuracy = 0.0
         final_stats['char_accuracy'] = accuracy
-        final_stats['char_quality'] = accuracy * final_stats['det_quality']
+        final_stats['char_quality'] = accuracy * final_stats['quality']
 
     return final_stats
+
+
+def find_matches(allowable: npt.NDArray[np.bool_],
+                 scores: npt.NDArray[np.double],
+                 ious: npt.NDArray[np.double] ) \
+                 -> Tuple[npt.NDArray[np.uint],
+                          npt.NDArray[np.uint],
+                          npt.NDArray[np.double]]:
+    """Optimize the bipartite matches and filter them to allowable matches.
+    Parameters
+      allowable:      MxN numpy bool array of valid correspondence candidates
+      scores:         MxN numpy float array of match candidate scores
+      ious:           MxN numpy float array of IoU scores
+    Returns
+      matches_gt:   Length T numpy array of values in [0,M) indicating ground
+                      truth element matched (corresponds to entries in
+                      matches_pred)
+      matches_pred: Length T numpy array of values in [0,N) indicating
+                      predicted element matched (corresponds to entries in
+                      matches_gt)
+      matches_ious: Length T numpy array of matches' values from ious
+    """
+    matches_gt,matches_pred = \
+        scipy.optimize.linear_sum_assignment(scores, maximize=True)
+
+    # A maximal bipartite matching, which scipy linear sum assignment algorithm
+    # appears to give, may include non-allowable matchings due to lack of
+    # alternatives. Therefore, these must be removed from the final list.
+    # (This is likely more straightforward than fiddling with returned indices
+    # after pre-filtering rows/columns that have no viable partners).
+    matches_valid = allowable[matches_gt,matches_pred]
+    matches_gt    = matches_gt[matches_valid]
+    matches_pred  = matches_pred[matches_valid]
+
+    matches_ious  = ious[matches_gt,matches_pred]
+
+    return matches_gt, matches_pred, matches_ious
 
 
 def evaluate_image( gt: Union[list[WordData],list[GroupData]],
                     pred: Union[list[WordData],list[GroupData]],
                     task: str,
-                    match_thresh: float = 0.5) -> Tuple[dict[str,float], dict[str,float]]:
+                    can_match: Callable[[Union[WordData,GroupData],
+                                         Union[WordData,GroupData],float],
+                                        bool],
+                    score_match: Callable[[Union[WordData,GroupData],
+                                           Union[WordData,GroupData],float],
+                                          bool] ) \
+                    -> Tuple[dict[str,Number], dict[str,Number]]:
     """Apply the appropriate evaluation scheme to lists of ground truth and
     prediction elements from the same image.
 
     Arguments
-      gt : List of dicts containing ground truth elements (each has the fields
+      gt: List of dicts containing ground truth elements (each has the fields
            'geometry', 'text', and 'ignore').
-      pred : List of dicts containing predicted elements for evaluation (each
-             has the fields 'geometry' and (if task contains 'rec') 'text' .
-      task : string describing the task (det, detlink, detrec, detreclink)
-      match_thresh : Minimum required IoU between ground truth and predicted
-                     areas to be considered a match
+      pred: List of dicts containing predicted elements for evaluation (each
+             has the fields 'geometry' and (if task contains 'rec') 'text'.
+      task: string describing the task (det, detlink, detrec, detreclink)
+      can_match: Predicate indicating whether ground truth and prediction are
+                   valid correspondence candidates
+      score_match: Function taking ground truth and predicted word dicts with
+                    their pre-calculated iou score and returning their match
+                    score (assumes they are valid matches)
     Returns
       results : dict containing totals for the accumulator
       stats : dict containing statistics for this image
     """
-
-    def find_matches(ious):
-        """Optimize the bipartite matches and filter them to allowable IoUs"""
-        matches_gt,matches_pred = \
-            scipy.optimize.linear_sum_assignment(ious, maximize=True)
-        # Filter out misleading "matches" assigned with an IoU of 0
-        matches_ious  = ious[matches_gt,matches_pred]
-        matches_valid = matches_ious > match_thresh  # enforce threshold
-        matches_ious  = matches_ious[matches_valid]
-        matches_gt    = matches_gt  [matches_valid]
-        matches_pred  = matches_pred[matches_valid]
-
-        return matches_gt, matches_pred, matches_ious
-
-
-    def eval_recognition( matches_gt, matches_pred, matches_ious, matches_count ):
-        """Calculate the number of true positives and tightness/accuracy scores
-        according to word recognition criteria"""
-        # sub-lists of just the non-ignorable matching elements
-        gt_matches   = [ gt[i]   for i in matches_gt  [matches_count] ]
-        pred_matches = [ pred[j] for j in matches_pred[matches_count] ]
-        # find and count the number of correct text predictions (i.e., 1-WER)
-        correct_matches = calc_transcriptions_correct( gt_matches, pred_matches )
-        tp_rec = np.sum(correct_matches)
-        # tally tightness only among correctly recognized, non-ignorable texts
-        total_rec_tightness = np.sum(matches_ious[matches_count][correct_matches])
-        # measure the text (mis)prediction (i.e., 1-CER)
-        text_score_matches = calc_transcriptions_scores(gt_matches, pred_matches)
-        # tally scores among all non-ignorable texts
-        total_rec_score = np.sum( text_score_matches )
-
-        return tp_rec, total_rec_tightness, total_rec_score
-
-    ious = calc_iou_pairs( gt, pred, match_thresh )
-    matches_gt, matches_pred, matches_ious = find_matches(ious)
+    allowed, scores, ious = calc_score_pairs( gt, pred, can_match, score_match )
+    matches_gt, matches_pred, matches_ious = find_matches(allowed, scores, ious)
 
     # Mark as ignorable any predicted regions that matched an ignored region
     matches_ignore = np.asarray([gt[i]['ignore'] for i in matches_gt])
@@ -564,34 +551,33 @@ def evaluate_image( gt: Union[list[WordData],list[GroupData]],
     total_pred = len(pred)  - num_matches_ignore
     total_gt   = len(gt)    - num_gt_ignore
 
-    tp_det = len(matches_pred) - num_matches_ignore
-    # assert tp_det == np.sum(matches_count)
-    total_det_tightness = np.sum(matches_ious[matches_count])
+    # Discount predictions that matched to an ignore
+    num_tp = len(matches_pred) - num_matches_ignore
 
-    results = { 'tp_det' : tp_det,
-                'total_gt' : total_gt,
-                'total_pred' :  total_pred,
-                'total_det_tightness' : total_det_tightness }
-    # Calculate detection statistics (also used for character-level recognition)
-    stats = get_stats( tp_det, total_gt, total_pred, total_det_tightness, 'det_')
+    # Accumulate tightness for matches that count (not ignorable)
+    total_tightness = np.sum(matches_ious[matches_count])
+
+    results = { 'tp' : int(num_tp),
+                'total_gt' : int(total_gt),
+                'total_pred' :  int(total_pred),
+                'total_tightness' : total_tightness }
+
+    stats = get_stats( num_tp, total_gt, total_pred, total_tightness )
 
     if 'rec' in task:
-        tp_rec, total_rec_tightness, total_rec_score = eval_recognition(
-            matches_gt, matches_pred, matches_ious, matches_count )
+        # measure text (mis)predictiontrue positives
+        text_score_matches = [ str_score( gt[g]['text'], pred[p]['text'] )
+          for (g,p) in zip(matches_gt[matches_count],
+                           matches_pred[matches_count]) ]
+        # tally scores among true positives
+        total_rec_score = sum( text_score_matches )
 
-        # Calculate recognition statistics (i.e., correct transcriptions)
-        stats_rec = get_stats( tp_rec, total_gt, total_pred, total_rec_tightness,
-                               'rec_' )
-        stats.update( stats_rec )  # Merge recognition stats
+        accuracy = total_rec_score / float(num_tp) if (num_tp > 0) else 0.0
 
-        accuracy = total_rec_score / float(tp_det) if (tp_det>0) else 0.0
         stats['char_accuracy'] = accuracy
-        stats['char_quality'] = accuracy * stats['det_quality']
+        stats['char_quality']  = accuracy * stats['quality']
 
-        results_rec = { 'tp_rec' : tp_rec,
-                        'total_rec_tightness' : total_rec_tightness,
-                        'total_rec_score' : total_rec_score }
-        results.update(results_rec)
+        results['total_rec_score'] = total_rec_score
 
     return results, stats
 
@@ -599,35 +585,42 @@ def evaluate_image( gt: Union[list[WordData],list[GroupData]],
 def evaluate(gt: dict[str,ImageData],
              pred: dict[str,ImageData],
              task: str,
-             match_thresh: float) -> Tuple[dict[str,float], dict[str,dict[str,float]]]:
-    """Run the primary evaluation rubric
+             can_match: Callable[[Union[WordData,GroupData],
+                                  Union[WordData,GroupData],float],
+                                 bool],
+             score_match: Callable[[Union[WordData,GroupData],
+                                    Union[WordData,GroupData],float],
+                                   bool] ) \
+             -> Tuple[dict[str,float], dict[str,dict[str,float]]]:
+    """Run the primary evaluation protocol over all images
 
     Returns:
       final_stats : dict containing pooled statistics for the entire data set
       stats : dict containing statistics for each image in the data set
     """
-
     def accumulate( totals: dict[str,float], results: dict[str,float] ):
         """Side-effect totals by accumulating matching keys of results"""
         for (k,v) in results.items():
             totals[k] += v
 
     # initialize accumulator
-    totals = { 'tp_det' : 0.,
-               'total_pred' : 0.,
-               'total_gt' : 0.,
-               'total_det_tightness' : 0.,
-               'tp_rec' : 0.,
-               'total_rec_tightness' : 0.,
-               'total_rec_score' : 0. }
-    stats = {} # Collected per-image statistics
+    totals = { 'tp' : 0,
+               'total_pred' : 0,
+               'total_gt' : 0,
+               'total_tightness' : 0.0 }
+    if 'rec' in task:
+        totals['total_rec_score'] = 0.0
+
+    stats = {}  # Collected per-image statistics
 
     for (img,gt_groups) in gt.items():  # Process each image
         pred_groups = pred[img] if img in pred else []
 
         if 'link' in task:  # evaluate at top level (groups)
             img_results, img_stats = evaluate_image( gt_groups, pred_groups,
-                                                     task, match_thresh )
+                                                     task,
+                                                     can_match, score_match )
+
         else:
             # flatten to list of words for evaluation
             gt_words = [ word for group in gt_groups
@@ -636,12 +629,14 @@ def evaluate(gt: dict[str,ImageData],
                            for word in group['words'] ]
 
             img_results, img_stats = evaluate_image( gt_words, pred_words,
-                                                     task, match_thresh )
+                                                     task,
+                                                     can_match, score_match )
 
         accumulate(totals,img_results)
         stats[img] = img_stats
 
     final_stats = get_final_stats( totals, task )  # Process totals
+
     return final_stats, stats
 
 
@@ -652,7 +647,8 @@ def sum_reduce_dict( a: dict[str,float], b: dict[str,float] ) -> dict[str,float]
 
 def flatten_zip_dict( gt: dict[str,ImageData],
                       pred: dict[str,ImageData],
-                      task: str) -> Tuple[list[str],list[Tuple[ImageData,ImageData]]]:
+                      task: str) \
+                      -> Tuple[list[str],list[Tuple[ImageData,ImageData]]]:
     """Helper for parallel processing functions. Zips corresponding ground truth
     and prediction entries into list of tuples, according to the task."""
     img_keys = list(gt.keys())  # cache keys to be certain of fixed ordering
@@ -671,10 +667,15 @@ def flatten_zip_dict( gt: dict[str,ImageData],
 def spark_evaluate(gt: dict[str,ImageData],
                    pred: dict[str,ImageData],
                    task: str,
-                   match_thresh: float,
+                   can_match: Callable[[Union[WordData,GroupData],
+                                        Union[WordData,GroupData],float],
+                                       bool],
+                   score_match: Callable[[Union[WordData,GroupData],
+                                          Union[WordData,GroupData],float],
+                                         bool],
                    images_per_slice: int = 10 ) -> \
                    Tuple[dict[str,float], dict[str,dict[str,float]]]:
-    """Run the primary evaluation rubric in parallel using Apache Spark
+    """Run the primary evaluation protocol in parallel using Apache Spark
 
     Returns:
       final_stats : dict containing pooled statistics for the entire data set
@@ -690,11 +691,13 @@ def spark_evaluate(gt: dict[str,ImageData],
     spark_session.sparkContext.addPyFile(__file__)  # Ensure serializability
 
     num_slices = len(data) // images_per_slice
-    data_rdd = spark_session.sparkContext.parallelize(data, numSlices=num_slices)
+    data_rdd = spark_session.sparkContext.parallelize(data,numSlices=num_slices)
     # Parallel run: produces list of tuples: [(totals, image_stats), ...]
-    results_rdd = data_rdd.map( lambda gp  : evaluate_image(gp[0], gp[1],
-                                                            task, match_thresh) )
-    results_rdd.persist() # Cache results to avoid subsequent re-computation
+    results_rdd = data_rdd.map( lambda gp: evaluate_image(gp[0], gp[1],
+                                                          task,
+                                                          can_match,
+                                                          score_match) )
+    results_rdd.persist()  # Cache results to avoid subsequent re-computation
     # Splice totals and reduce by summing, then splice per-image stats
     totals = results_rdd.map( lambda ts : ts[0] ).reduce(sum_reduce_dict)
     stats_list = results_rdd.map( lambda ts: ts[1]).collect()  # Per-image stats
@@ -705,17 +708,23 @@ def spark_evaluate(gt: dict[str,ImageData],
     return final_stats, stats
 
 
-def evaluate_image_tuple(gt_pred, task, match_thresh):
+def evaluate_image_tuple(gt_pred, task, can_match, score_match):
     """Pickle-able top-level function accepting paired lead inputs as a tuple"""
-    return evaluate_image(gt_pred[0], gt_pred[1], task, match_thresh)
+    return evaluate_image(gt_pred[0], gt_pred[1], task,
+                          can_match, score_match)
 
 
 def pool_evaluate(gt: dict[str,ImageData],
                   pred: dict[str,ImageData],
                   task: str,
-                  match_thresh: float ) -> \
-                  Tuple[dict[str,float], dict[str,dict[str,float]]]:
-    """Run the primary evaluation rubric in parallel using multiprocessing Pool
+                  can_match: Callable[[Union[WordData,GroupData],
+                                       Union[WordData,GroupData],float],
+                                      bool],
+                  score_match: Callable[[Union[WordData,GroupData],
+                                         Union[WordData,GroupData],float],
+                                        bool]) \
+                   -> Tuple[dict[str,float], dict[str,dict[str,float]]]:
+    """Run the primary evaluation protocol in parallel using Pool
 
     Returns:
       final_stats : dict containing pooled statistics for the entire data set
@@ -725,24 +734,94 @@ def pool_evaluate(gt: dict[str,ImageData],
     img_keys,data = flatten_zip_dict(gt,pred,task)  # zip image keys for map
 
     # Fill in arguments for pickle-able function to use with Pool.map
-    simple_evaluate = partial(evaluate_image_tuple, task=task, match_thresh=match_thresh)
+    simple_evaluate = partial(evaluate_image_tuple, task=task,
+                                  can_match=can_match, score_match=score_match)
 
     with Pool() as pool:
         results = pool.map( simple_evaluate, data)
 
     totals = reduce( sum_reduce_dict, [ts[0] for ts in results] )
-    stats = dict(zip(img_keys,[ts[1] for ts in results]))  # Restore list to keyed format
+    # Restore list to keyed format
+    stats = dict(zip(img_keys,[ts[1] for ts in results]))
 
     final_stats = get_final_stats( totals, task )
 
     return final_stats, stats
+
+# NB: Prefer these functions to be local to config_protocol, but they must
+# be top level, in order to be pickleable for multiprocessing.Pool
+
+# Using epsilon for ignore ground truths biases toward valid matches
+def pq_score(g: Union[WordData,GroupData], d: Union[WordData,GroupData],
+             iou: float) -> float:
+    """Detection, detection+linking, and recognition optimize for PDQ/PRQ
+    by using IoU"""
+    return IGNORE_EPSILON if g['ignore'] else iou
+
+def pcq_score(g: Union[WordData,GroupData], d: Union[WordData,GroupData],
+              iou: float) -> float:
+    """Recognition+Linking optimize for PCQ by using IoU*CNED"""
+    if g['ignore']:
+        return IGNORE_EPSILON
+    return iou * str_score(g['text'], d['text'])
+
+def det_valid(g: Union[WordData,GroupData], d: Union[WordData,GroupData],
+              iou: float, match_thresh: float) -> bool:
+    """Detections (linking or not) require IoU threshold to be met"""
+    return iou > match_thresh
+
+def rec_valid(g: Union[WordData,GroupData], d: Union[WordData,GroupData],
+              iou: float, match_thresh: float) -> bool:
+    """Recognitions require minimum IoU threshold and string matches.
+    Allow matches to an ignore without requiring string matching; their
+    score will be lower than matches to non-ignores.
+    """
+    return iou > match_thresh and (g['ignore'] or g['text'] == d['text'])
+
+def str_score(gs: str, ds: str) -> float:
+    """Complementary normalized edit distance, 1-NED"""
+    return 1.0 - normalized_levenshtein(gs,ds)
+
+
+def config_protocol(task: str, match_thresh: float) -> \
+    Tuple[Callable[[Union[WordData,GroupData],Union[WordData,GroupData],float],
+                   bool],
+          Callable[[Union[WordData,GroupData],Union[WordData,GroupData],float],
+                   float]]:
+    """Process arguments to configure specific protocol functionality: string
+    match (bool) and score (i.e., 1-NED) functions as well as
+    correspondence candidate criteria (bool) and match score (float)
+    functions.
+
+    Parameters
+
+    Returns
+      can_match:    Predicate taking ground truth and predicted word dicts with
+                      their pre-calculated iou score and returning whether the
+                      correspondence satisfies match criteria
+      score_match:  Function taking ground truth and predicted word dicts with
+                      their pre-calculated iou score and returning their match
+                      score (assumes they are valid matches)
+    """
+    if task=='det' or task=='detlink':
+        can_match = partial(det_valid, match_thresh=match_thresh)
+        score_match = pq_score
+    elif task=='detrec':
+        can_match = partial(rec_valid, match_thresh=match_thresh)
+        score_match = pq_score
+    elif task=='detreclink':
+        can_match = partial(det_valid, match_thresh=match_thresh)
+        score_match = pcq_score
+    else:
+        raise ValueError(f'Unknown task: "{task}"')
+
+    return can_match, score_match
 
 
 def main():
     """Main entry point for evaluation script"""
 
     args = parser.parse_args()
-    # TODO(jjw) Add command-line options to configure logger?
 
     is_linking = 'link' in args.task
     is_e2e     = 'rec' in args.task
@@ -763,8 +842,10 @@ def main():
     else:
         eval_fn = evaluate
 
+    can_match, score_match = config_protocol(args.task, args.iou_threshold)
+    
     overall,per_image = eval_fn( gt_anno, preds,
-                                 args.task, args.iou_threshold )
+                                 args.task, can_match, score_match )
 
     print(overall)
 
