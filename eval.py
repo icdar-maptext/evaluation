@@ -772,8 +772,11 @@ def det_valid(g: Union[WordData,GroupData], d: Union[WordData,GroupData],
 
 def rec_valid(g: Union[WordData,GroupData], d: Union[WordData,GroupData],
               iou: float, match_thresh: float) -> bool:
-    """Recognitions require minimum IoU threshold and string matches"""
-    return iou > match_thresh and g['text'] == d['text']
+    """Recognitions require minimum IoU threshold and string matches.
+    Allow matches to an ignore without requiring string matching; their
+    score will be lower than matches to non-ignores.
+    """
+    return iou > match_thresh and (g['ignore'] or g['text'] == d['text'])
 
 def str_score(gs: str, ds: str) -> float:
     """Complementary normalized edit distance, 1-NED"""
