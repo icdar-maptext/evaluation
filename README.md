@@ -15,9 +15,8 @@ although newer versions should also work, using the same version (as specified b
 If using conda, create a conda environment with the requisite versions:
 
 ```shell
-conda create -n maptext-eval python=3.9.18 --file conda-requirements.txt
+conda env create -f conda-environment.yaml
 conda activate maptext-eval
-pip install -r pip-requirements.txt
 ```
 
 ### Pipenv Installation

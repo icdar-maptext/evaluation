@@ -1,0 +1,12 @@
+name: maptext-eval
+channels:
+  - defaults
+dependencies:
+  - numpy==1.26.2
+  - python=3.9.18
+  - shapely==2.0.1
+  - scipy==1.11.4
+  - pip=23.3.1
+  - pip:
+      - polygon3==3.0.9.1
+      - pyeditdistance==1.0.1
