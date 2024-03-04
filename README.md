@@ -90,14 +90,21 @@ python3 eval.py --gt data/example_gt.json --pred data/example_pred.json --task d
 ```
 Output:
 ```json
-{"recall": 0.375, "precision": 0.42857142857142855, "fscore": 0.39999999999999997, "tightness": 0.7638758904606489, "quality": 0.3055503561842595, "char_accuracy": 1.0, "char_quality": 0.3055503561842595}
+{"recall": 0.375,
+ "precision": 0.42857142857142855,
+ "fscore": 0.39999999999999997,
+ "tightness": 0.7638758904606489,
+ "quality": 0.3055503561842595,
+ "char_accuracy": 1.0,
+ "char_quality": 0.3055503561842595}
 ```
 
 #### Sample Data
 After downloading sample data ([below](#data)) and producing predictions:
 
 ```shell
-python3 eval.py --gt sample.json --pred YOUROUTPUT.json --task det --parallel pool --gt-regex sample
+python3 eval.py --gt sample.json --pred YOUROUTPUT.json \
+  --task det --parallel pool --gt-regex sample
 ```
 
 ## Data
@@ -110,9 +117,9 @@ See competition [downloads](https://rrc.cvc.uab.es/?ch=28&com=downloads) for dat
 * [French Cadastre Data Set ![DOI:10.5281/zenodo.10610731](https://zenodo.org/badge/DOI/10.5281/zenodo.10610731.svg)](https://doi.org/10.5281/zenodo.10610731)
   - Train Split (80 tiles from 37 maps)
   - Validation Split (15 tiles from 9 maps)
-* Competition Test Data (Expected 1 Mar 2024)
-  - General Rumsey Data Set (700 tiles from 700 maps)
-  - French Cadastre Data Set (50 tiles from 50 maps)
+* Competition Test Data
+  - [General Rumsey Data Set ![DOI:10.5281/zenodo.10776182](https://zenodo.org/badge/DOI/10.5281/zenodo.10776182.svg)](https://doi.org/10.5281/zenodo.10776182) (700 tiles from 700 maps)
+  - [French Cadastre Data Set ![DOI:10.5281/zenodo.10732280](https://zenodo.org/badge/DOI/10.5281/zenodo.10732280.svg)](https://doi.org/10.5281/zenodo.10732280) (50 tiles from 49 maps)
 * [Sample Data Set ![DOI:10.5281/zenodo.10444912](https://zenodo.org/badge/DOI/10.5281/zenodo.10444912.svg)](https://doi.org/10.5281/zenodo.10444912)
   - 353 tiles from 31 maps of 9 atlases
   
